@@ -17,5 +17,5 @@ mvn install
 Android dependency target:
 
 ```kotlin
-implementation("org.dwdc:org.dwdc.keyvault.nostr:0.1.0-SNAPSHOT")
+implementation("org.dwdc:org.dwdc.keyvault.nostr:0.1.0")
 ```
