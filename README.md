@@ -1,11 +1,11 @@
-# org.dwdc.keyvault
+# club.dwdc.keyvault
 
 Minimal DWDC KeyVault library extracted from the existing IZ KeyVault codebase.
 
 This repo intentionally starts with only the modules currently needed by the Android KeyMaster app:
 
-- `org.dwdc.keyvault.core`
-- `org.dwdc.keyvault.nostr`
+- `club.dwdc.keyvault.core`
+- `club.dwdc.keyvault.nostr`
 
 Build locally:
 
@@ -17,5 +17,5 @@ mvn install
 Android dependency target:
 
 ```kotlin
-implementation("org.dwdc:org.dwdc.keyvault.nostr:0.1.0")
+implementation("club.dwdc:club.dwdc.keyvault.nostr:0.1.0")
 ```

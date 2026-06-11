@@ -3,17 +3,17 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>org.dwdc</groupId>
-    <artifactId>org.dwdc.keyvault</artifactId>
+    <groupId>club.dwdc</groupId>
+    <artifactId>club.dwdc.keyvault</artifactId>
     <version>0.1.0</version>
     <packaging>pom</packaging>
 
-    <name>org.dwdc.keyvault</name>
+    <name>club.dwdc.keyvault</name>
     <description>Minimal KeyVault modules used by DWDC KeyMaster.</description>
 
     <modules>
-        <module>org.dwdc.keyvault.core</module>
-        <module>org.dwdc.keyvault.nostr</module>
+        <module>club.dwdc.keyvault.core</module>
+        <module>club.dwdc.keyvault.nostr</module>
     </modules>
 
     <properties>
