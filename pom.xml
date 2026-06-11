@@ -11,6 +11,14 @@
     <name>club.dwdc.keyvault</name>
     <description>Minimal KeyVault modules used by DWDC KeyMaster.</description>
 
+    <licenses>
+        <license>
+            <name>GNU General Public License v3.0 only</name>
+            <url>https://www.gnu.org/licenses/gpl-3.0.html</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
     <modules>
         <module>club.dwdc.keyvault.core</module>
         <module>club.dwdc.keyvault.nostr</module>

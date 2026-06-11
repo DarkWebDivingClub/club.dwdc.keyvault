@@ -19,3 +19,8 @@ Android dependency target:
 ```kotlin
 implementation("club.dwdc:club.dwdc.keyvault.nostr:0.1.0")
 ```
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 only
+(`GPL-3.0-only`). See [LICENSE](LICENSE).
