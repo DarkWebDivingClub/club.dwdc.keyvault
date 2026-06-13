@@ -7,6 +7,9 @@ This repo intentionally starts with only the modules currently needed by the And
 - `club.dwdc.keyvault.core`
 - `club.dwdc.keyvault.nostr`
 
+The current KeyVault, KeyMaster, Avatar, and host-service architecture is
+described in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md).
+
 Build locally:
 
 ```sh

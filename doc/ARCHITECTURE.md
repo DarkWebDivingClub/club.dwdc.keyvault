@@ -1,303 +1,420 @@
-# IZ KeyVault - Architecture
+# DWDC Key System Architecture
 
-This document describes the system architecture of IZ KeyVault. For key derivation
-details (seed hierarchy, ChaCha20 CSPRNG, fingerprint restoration), see
-[KEY_DERIVATION.md](KEY_DERIVATION.md).
+Status: Draft
 
-## Overview
+This document defines the current architectural direction for KeyMaster,
+Avatar, Avatar services, and KeyVault. Earlier design documents are archived
+under [old/](old/).
 
-The system is split into three components:
+## Goals
 
-```
-┌────────────────┐     ┌──────────────┐     ┌──────────────┐
-│    KeyVault    │     │  KeyMaster   │     │    Avatar    │
-│  crypto engine │◄────│  orchestrator│◄────│   gateway    │
-│                │     │              │     │              │
-│ deterministic  │     │ services,    │     │ Nostr/UDP    │
-│ key ops only   │     │ identity,    │     │ relay for    │
-│                │     │ routing      │     │ remote access│
-└────────────────┘     └──────────────┘     └──────────────┘
-```
+The system must:
 
-**KeyVault** is the crypto engine. It takes a key path and a call configuration, and returns
-bytes. It has no knowledge of services, identities, or protocols as concepts — only as opaque
-byte arrays fed into the derivation chain.
+- keep mnemonic phrases, derived private seeds, and private keys inside the
+  KeyMaster and KeyVault security boundary;
+- support protocol-specific operations without coupling KeyVault to external
+  protocols;
+- let a KeyMaster serve applications running on another host;
+- support user authentication and approval before sensitive operations;
+- expose native host interfaces such as SSH agent, GnuPG, and PKCS#11;
+- allow transports and host adapters to evolve independently.
 
-**KeyMaster** is the service orchestrator. It owns the semantic model: identities, protocols,
-configurations. It presents a hierarchical service tree where each node is addressable via a
-path like `["alice@atlanta.com", "ssh", "<config-hash>"]`.
+## Components
 
-**Avatar** is the gateway. It sits between untrusted clients and KeyMaster, relaying
-requests over Nostr-encrypted UDP. A phone can talk to a KeyMaster running on a home server
-without either knowing each other's network address.
+```text
+Target host                                      Controller host or device
 
-## KeyVault — The Crypto Engine
-
-KeyVault has a single entry point:
-
-```java
-public byte[] execute(KeyPath keyPath, AbstractCallConfig callConfig)
-```
-
-`KeyPath` is a record of three byte arrays:
-
-```java
-public record KeyPath(byte[] identity, byte[] protocol, byte[] config) {}
+Application
+    |
+Native protocol
+    |
+Avatar service
+    |
+Uniform local Avatar API
+    |
+Avatar
+    |
+Authenticated Avatar-KeyMaster protocol
+    |
+KeyMaster
+    |
+Protocol-specific KeyMaster service
+    |
+KeyVault
 ```
 
-These three fields are fed into a three-level seed derivation chain (each level is
-`SHA-256(parentSeed || bytes)`), producing a protocol-specific seed. KeyVault does not
-interpret these bytes — it just derives from them.
+### KeyMaster
 
-`AbstractCallConfig` carries a `callId` integer that selects which operation to perform, plus
-operation-specific parameters (public key to match, data to sign, etc.). The `callId` is used
-to look up a call executor class from a static dispatch map:
+KeyMaster is the controller and security authority.
 
-| Range     | Protocol | Operations                              |
-|-----------|----------|-----------------------------------------|
-| `0x3000+` | SSH      | getPublicKey, sign                      |
-| `0x4000+` | Nostr    | getPublicKey, signEvent, nip44Encrypt/Decrypt |
-| `0x5000+` | Bitcoin  | getWatchingKey, sign                    |
+KeyMaster:
 
-Each call executor is an inner class of KeyVault that extends `AbstractKeyVaultCall`. It
-receives the derived seed in its constructor and implements `execute()` to perform the
-cryptographic operation. The executor is instantiated via reflection from the dispatch map:
+- owns identities, accounts, key metadata, configuration, and policy;
+- records which protocol configurations and derived keys are active for each
+  identity;
+- implements protocol-specific services;
+- determines which services and keys a caller may use;
+- requests user authentication or explicit approval when policy requires it;
+- manages sessions and delegated capabilities;
+- translates protocol operations into constrained KeyVault calls;
+- returns public information, signatures, decrypted data, or other operation
+  results;
+- records security-relevant audit information.
 
-```java
-callMap.get(callConfig.callId)
-    .getDeclaredConstructor(KeyVault.class, KeyPath.class, callConfig.getClass())
-    .newInstance(this, keyPath, callConfig);
+KeyMaster must not give Avatar unrestricted KeyVault access. In particular,
+Avatar must not receive mnemonic phrases, BIP-39 passphrases, private seeds,
+private keys, or an unrestricted key-derivation function.
+
+Examples of KeyMaster services include:
+
+- SSH service;
+- OpenPGP service;
+- Nostr service;
+- TLS and X.509 service;
+- Bitcoin service.
+
+Each service defines its own versioned operations and data types. For example,
+the SSH service may expose public-key lookup and SSH signing, while the Nostr
+service may expose public-key lookup, event signing, and NIP-44
+encryption/decryption.
+
+The initial protocol-specific service contracts are:
+
+- [SSH service protocol](SSH.md)
+- [PKCS#11 service protocol](PKCS11.md)
+
+### KeyVault
+
+KeyVault is the deterministic cryptographic engine.
+
+KeyVault:
+
+- derives keys from the configured root secret;
+- executes narrowly defined cryptographic operations;
+- has no user interface, network listener, or host integration;
+- does not make authorization decisions;
+- does not expose private key material unless an explicitly enabled
+  administrative operation requires it.
+
+KeyMaster is responsible for converting semantic requests into KeyVault paths
+and function calls.
+
+### Avatar
+
+Avatar is KeyMaster's representative on a target host.
+
+Avatar:
+
+- attaches to and authenticates a KeyMaster;
+- negotiates available services and capabilities;
+- maintains encrypted sessions with KeyMaster;
+- manages the lifecycle of Avatar services on the host;
+- provides a uniform local API to Avatar services;
+- routes requests and responses;
+- handles reconnects, timeouts, cancellation, and session revocation;
+- exposes no private key material.
+
+Avatar is not the policy authority and should not implement protocol
+cryptography that belongs in KeyMaster. It may enforce local restrictions, but
+KeyMaster performs the final authorization.
+
+### Avatar Services
+
+An Avatar service integrates one native host protocol with Avatar.
+
+An Avatar service:
+
+- exposes the socket, shared library, or operating-system interface expected by
+  local applications;
+- implements protocol-specific session and object behavior;
+- translates native requests into the uniform local Avatar API;
+- translates KeyMaster results back into the native protocol;
+- requests only the capabilities needed for its protocol.
+
+Avatar services should normally run separately from the Avatar daemon. This
+keeps native protocol parsers isolated and lets services be installed,
+restarted, or upgraded independently.
+
+Initial Avatar service candidates are:
+
+| Avatar service | Native interface | Typical clients |
+|---|---|---|
+| SSH agent | SSH-agent Unix socket | OpenSSH, Git |
+| PKCS#11 | PKCS#11 shared library | Firefox, Brave, TLS applications |
+| GnuPG | GPG-agent/scdaemon integration | GnuPG |
+| Local CLI | Command-line client | Administration and diagnostics |
+
+The PKCS#11 adapter is expected to be a thin shared library that connects to
+Avatar's local API. It must not contain or derive private keys.
+
+GnuPG integration remains an open design decision. It may use a PKCS#11 bridge
+where compatible, or a dedicated GPG/Assuan adapter when OpenPGP behavior
+cannot be represented correctly through PKCS#11.
+
+## Interfaces
+
+### Avatar Service to Avatar
+
+Avatar exposes one uniform local API, preferably over a user-scoped Unix-domain
+socket on Unix systems.
+
+The local API is capability-oriented rather than tied to SSH, GnuPG, or
+PKCS#11. Candidate operations include:
+
+```text
+session.open
+session.close
+capabilities.list
+identities.list
+keys.list
+key.describe
+key.public
+certificate.get
+certificate.chain
+sign
+decrypt
+deriveSecret
+request.status
+request.cancel
 ```
 
-KeyVault is stateless per call. The same `(KeyPath, CallConfig)` always produces the same
-`byte[]`.
+An Avatar service identifies its adapter type and requests a limited capability
+set when opening a session. For example:
 
-**Key source:** `KeyVault.java`
-
-## The KeyMaster-KeyVault Boundary
-
-KeyMaster does not call `KeyVault.execute()` directly. Between them sits `KeyVaultRunnable`,
-a serialization point built on `BlockingQueue`:
-
-```
-KeyMaster threads                KeyVaultRunnable thread
-      │                                 │
-      ├─ executeTask(path, config) ──►  │
-      │   (creates KeyVaultTask,        │
-      │    puts on task queue,     tasks.take()
-      │    blocks on result queue)      │
-      │                           keyVault.execute(...)
-      │                                 │
-      │  ◄── result bytes ─────── result.put(bytes)
-      │                                 │
-```
-
-`KeyVaultRunnable` runs in its own thread, started by `KeyMasterStackedService` at
-construction time. Multiple KeyMaster threads can submit tasks concurrently; the
-`BlockingQueue` serializes them into single-threaded execution on the vault side. Each task
-carries its own single-slot `BlockingQueue<byte[]>` for the return value — the caller blocks
-on `task.result.take()` until the vault thread puts the result.
-
-This boundary is **transport-agnostic**. Today it is an in-process `BlockingQueue`. It could
-be a socket, a USB channel to a hardware device, or an ISO 7816 APDU exchange with a smart
-card — the interface is the same: send `(KeyPath, CallConfig)`, receive `byte[]`.
-
-**Key sources:** `KeyVaultRunnable.java`, `KeyMasterStackedService.java`
-
-## KeyVaultProxy — Bridging Semantics to Bytes
-
-`KeyVaultProxy` sits on the KeyMaster side and translates typed, protocol-aware calls into
-the `(KeyPath, CallConfig) → byte[]` interface that KeyVault expects.
-
-It contains three inner classes — `BitcoinProtocolExecutor`, `SshProtocolExecutor`,
-`NostrProtocolExecutor` — each constructed with a protocol-specific configuration object.
-On construction, the executor assembles a `KeyPath` by mangling the identity string, the
-protocol ID, and the JSON-serialized configuration:
-
-```java
-this.keyPath = new KeyVault.KeyPath(
-    WalletHelper.mangle(identity.id),
-    WalletHelper.mangle(SshProtocolStackedService.PROTOCOL_ID),
-    WalletHelper.mangle(ConfigurationHelper.toJSON(config)));
-```
-
-When a method like `sign()` is called, the executor constructs the appropriate `CallConfig`
-and submits it through `KeyVaultRunnable.executeTask()`.
-
-**Key source:** `KeyVaultProxy.java`
-
-## The Addressing Scheme
-
-Every entity in the system is addressed by a path of three components:
-
-```
-identity  /  protocol  /  configuration
-```
-
-For example: `alice@atlanta.com / ssh / {"type":"ED25519","size":255}`.
-
-At the KeyVault level, these are three opaque `byte[]` values in a `KeyPath`. KeyVault
-derives a seed from them but does not parse them. The `mangle()` function normalizes each
-component: strings of 32 bytes or less are used as-is; longer strings are SHA-256 hashed.
-This means the configuration (which is typically a JSON string longer than 32 bytes) becomes
-a hash, while short values like `"ssh"` pass through unchanged.
-
-KeyMaster owns the semantics. It knows that `"alice@atlanta.com"` is an identity, that
-`"ssh"` maps to `SshProtocolStackedService`, and that the configuration determines key
-parameters. The same addressing scheme drives both the seed derivation (in KeyVault) and the
-service routing (in the stacked service tree).
-
-## The Secure Service Stack
-
-The service layer is a tree of `StackedService` nodes. Each node can process a JSON-RPC
-message locally or delegate to a child by stripping the first element from an address path.
-
-### Core classes
-
-**`IStackedService`** — interface exposing `getDefaultId()` and `getChildIds()`.
-
-**`StackedService`** — holds a map of child `StackedSubService` instances and a
-`ServiceProcessor`. The `process()` method implements address-based routing:
-
-```java
-public String process(List<String> address, String message) {
-    if (address.isEmpty())
-        return processor.process(message);          // handle locally
-    return subServices.get(address.removeFirst())   // delegate to child
-        .process(address, message);
+```json
+{
+  "adapter": "ssh-agent",
+  "requestedCapabilities": [
+    "keys.list:ssh",
+    "key.public:ssh",
+    "sign:ssh"
+  ]
 }
 ```
 
-**`StackedSubService<A extends StackedService>`** — a service that has a typed parent.
-Self-registers with the parent on construction:
+The local API must support request identifiers, structured errors, operation
+timeouts, cancellation, and asynchronous approval states.
 
-```java
-public StackedSubService(A parent, String id) {
-    this.parent = parent;
-    if (parent != null)
-        parent.subServices.put(id, this);
-}
+### Avatar to KeyMaster
+
+Avatar and KeyMaster communicate using an authenticated, encrypted, versioned
+protocol.
+
+The current transport candidate is Nostr with NIP-44 encryption. The service
+model must remain independent of Nostr so that another transport can implement
+the same protocol.
+
+The protocol must support:
+
+- attachment and mutual authentication;
+- protocol and service version negotiation;
+- service discovery;
+- scoped service-channel creation;
+- identity and capability restrictions;
+- request/response correlation;
+- pending approval responses;
+- cancellation, expiry, detach, and revocation;
+- reconnect and session recovery rules;
+- explicit message-size and replay limits.
+
+Avatar sends requests to a named, versioned KeyMaster service. It does not send
+arbitrary Java method names or unrestricted KeyVault paths.
+
+### KeyMaster to KeyVault
+
+The KeyMaster-to-KeyVault boundary is a narrow execution API:
+
+```text
+execute(function, keyPath, parameters, payload) -> result
 ```
 
-### Service tree
+This boundary may initially be in-process. Its contract must permit a future
+isolated process, hardware module, smart card, or other secure execution
+environment.
 
-```
-KeyMasterStackedService
-  └─ IdentityStackedService ["alice@atlanta.com"]
-       ├─ BitcoinProtocolStackedService ["bitcoin"]
-       │    └─ BitcoinConfigurationStackedService [<config-hash>]
-       ├─ SshProtocolStackedService ["ssh"]
-       │    └─ SshConfigurationStackedService [<config-hash>]
-       └─ NostrProtocolStackedService ["nostr"]
-            └─ NostrConfigurationStackedService [<config-hash>]
-```
+## Service and Key Addressing
 
-A request to `["alice@atlanta.com", "bitcoin", "<config-hash>"]` with message
-`{"methodName":"sign","args":[...]}` gets routed through three levels to the configuration
-service, where `ServiceProcessor` handles it.
+KeyMaster owns stable identifiers for:
 
-### JSON-RPC dispatch
+- identities;
+- services;
+- configurations;
+- keys;
+- certificates;
+- sessions.
 
-**`ServiceProcessor<S>`** deserializes an incoming JSON message into a `CallRequestMessage`
-(id, methodName, args), finds the matching method on the service object by name via
-reflection, deserializes arguments to the target parameter types, invokes the method, and
-returns a `CallResponseMessage` (id, result).
+A conceptual service address is:
 
-**`ServiceInvocationHandler<A>`** is the client-side counterpart. It implements
-`InvocationHandler` to create dynamic proxies: calling a method on the proxy serializes the
-call as a `CallRequestMessage`, sends it via `AvatarConnector.sendText()`, and deserializes
-the `CallResponseMessage` back into the return type.
-
-The `recast()` helper handles type conversion across the JSON boundary:
-
-```java
-static Object recast(Object parameter, Class<?> type) {
-    return mapper.readValue(mapper.writeValueAsString(parameter), type);
-}
+```text
+identity / service / configuration / key-role / key-index
 ```
 
-**Key sources:** `IStackedService.java`, `StackedService.java`, `StackedSubService.java`,
-`ServiceProcessor.java`, `ServiceInvocationHandler.java`
+External callers receive opaque identifiers rather than raw KeyVault
+derivation paths. KeyMaster resolves those identifiers and applies policy
+before invoking KeyVault.
 
-## Avatar — The Gateway
+## Identity Configuration and Key Activation
 
-Avatar (`IZSystemAvatar3`) bridges untrusted clients to KeyMaster over Nostr-encrypted UDP.
-It runs two concurrent services:
+The seed defines which keys KeyVault can derive. It does not define which keys
+KeyMaster exposes or permits callers to use.
 
-**DownLinkService** — listens on `lowerSocket` for client requests. When a request arrives,
-it records the route (sender pubkey, event ID, socket address) in a correlation map keyed by
-request ID, then forwards the request to KeyMaster via the `upperSocket`.
+KeyMaster maintains metadata for every configured identity. The metadata
+records:
 
-**UpLinkService** — listens on `upperSocket` for KeyMaster responses. When a response
-arrives, it looks up the original client route from the correlation map and sends the response
-back to the client via `lowerSocket`.
+- the identity identifier and display metadata;
+- the protocol services assigned to the identity;
+- the algorithm, key role, and key index assigned to each service;
+- whether each service and key assignment is active;
+- protocol-specific public metadata, such as certificates or OpenPGP user IDs;
+- authorization policy and allowed Avatars;
+- configuration version, creation time, and modification time.
 
+All supported protocol derivation namespaces may be technically available
+from a seed, but no protocol or key becomes active merely because it can be
+derived. KeyMaster services list and use only assignments marked active.
+Disabling an assignment prevents new operations without changing the seed or
+destroying the deterministic ability to derive the same key later.
+
+When creating an identity, the user selects which protocols to assign to it.
+For example, an identity may enable SSH and Nostr while leaving PKCS#11,
+OpenPGP, and Bitcoin inactive. Each assignment selects its algorithm, key
+role, key index, metadata, and policy.
+
+Identity templates may provide reusable defaults. A template can define:
+
+- a set of protocol assignments;
+- default algorithms and key roles;
+- default key indices or allocation rules;
+- required protocol metadata;
+- default authorization and approval policy.
+
+Applying a template creates ordinary identity configuration records. The
+identity may then override, activate, or deactivate individual assignments.
+Templates do not contain seeds or private keys.
+
+### Metadata Persistence with Nostr
+
+KeyMaster may store and synchronize identity configuration metadata as signed,
+encrypted Nostr events. This gives KeyMaster a transport-independent place to
+recover configuration from one or more relays.
+
+The persisted records must:
+
+- be signed by an administrative KeyMaster identity;
+- be encrypted for the intended KeyMaster installation or owner;
+- contain stable identity, assignment, and configuration identifiers;
+- include a monotonically ordered revision or an explicit predecessor;
+- support revocation and tombstone records;
+- exclude mnemonic phrases, seed material, private keys, and secret
+  passphrases.
+
+The Nostr relay is storage and synchronization infrastructure, not the
+authority that activates keys. KeyMaster verifies signatures, encryption,
+ownership, revision ordering, and policy before accepting metadata. Cached
+local state remains necessary when relays are unavailable.
+
+## Authorization and User Interaction
+
+Authorization is part of KeyMaster, not an Avatar service.
+
+For each operation, KeyMaster evaluates:
+
+- authenticated caller and Avatar session;
+- requested service and capability;
+- identity and key scope;
+- operation type and algorithm;
+- configured policy;
+- request origin and contextual information;
+- whether user authentication or approval is required.
+
+An operation may complete immediately, be rejected, or enter a pending state:
+
+```text
+requested -> pending-approval -> approved -> completed
+                              \-> rejected
+                              \-> expired
+                              \-> cancelled
 ```
-Client                  Avatar                   KeyMaster
-  │                       │                         │
-  ├─ Request(id=42) ──►   │                         │
-  │                  paths[42] = client route        │
-  │                       ├─ Request(id=42) ──────►  │
-  │                       │                          │
-  │                       │  ◄── Response(id=42) ────┤
-  │                  route = paths.remove(42)        │
-  │  ◄── Response(id=42) ─┤                         │
+
+A Kotlin or Android GUI is a KeyMaster user interface. It consumes pending
+authorization requests, presents them to the user, performs platform
+authentication where configured, and returns the decision to KeyMaster. The
+GUI must call the same KeyMaster application API used by non-graphical
+frontends; cryptographic policy must not be implemented in Compose screens.
+
+## Example Flows
+
+### SSH Signing
+
+```text
+ssh
+ -> SSH-agent socket
+ -> SSH Avatar service
+ -> Avatar local API: sign
+ -> Avatar-KeyMaster SSH service request
+ -> KeyMaster policy and optional approval
+ -> KeyVault signing operation
+ -> SSH signature response
 ```
 
-Messages are Nostr events, encrypted with NIP-44 (ChaCha20-Poly1305). `LinkService` handles
-the receive loop: it receives a `GenericEvent` from the UDP socket, determines the encryption
-type from event tags, decrypts the content, and dispatches to `onRequest()` or `onResponse()`
-based on whether the event carries a response tag.
+### Browser Client Certificate
 
-`AvatarConnector` is the client-side complement. It manages a `Transaction` map for
-request-response correlation. `sendText()` creates a `Request`, registers a `Transaction`
-(which contains a `BlockingQueue<Response>`), sends the request, and blocks on the response
-queue until the avatar delivers the reply.
+```text
+Firefox or Brave
+ -> libdwdc-pkcs11
+ -> PKCS#11 Avatar service
+ -> Avatar local API: certificate.get or sign
+ -> Avatar-KeyMaster TLS/X.509 service request
+ -> KeyMaster policy and optional approval
+ -> KeyVault signing operation
+ -> PKCS#11 result
+```
 
-**Key source:** `IZSystemAvatar3.java`, `AvatarConnector.java`
+### OpenPGP Signing
 
-## Smart Card Compatibility
+```text
+gpg
+ -> GnuPG adapter or validated PKCS#11 bridge
+ -> Avatar local API: sign
+ -> Avatar-KeyMaster OpenPGP service request
+ -> KeyMaster policy and optional approval
+ -> KeyVault signing operation
+ -> OpenPGP-compatible signature result
+```
 
-The KeyVault interface — `(KeyPath, CallConfig) → byte[]` — was designed to map onto the
-ISO 7816 APDU command structure used by smart cards:
+Public OpenPGP certificates, fingerprints, subkey metadata, and creation times
+remain first-class metadata. KeyExporter may construct exportable OpenPGP key
+rings, while runtime private-key operations remain controlled by KeyMaster.
 
-| KeyVault concept   | APDU equivalent          |
-|--------------------|--------------------------|
-| `callId`           | INS byte (instruction)   |
-| `KeyPath` bytes    | Command data field       |
-| `CallConfig` fields| Command data / P1-P2     |
-| `byte[]` return    | Response data + SW1/SW2  |
+## Security Boundaries
 
-The split is: **KeyVault operations stay on the card**, everything else stays on the host.
-The card holds the seed and executes `AbstractKeyVaultCall` subclasses. The host runs
-KeyMaster, the service tree, and the avatar layer. The `KeyVaultRunnable` boundary becomes
-the card reader interface — same `(KeyPath, CallConfig) → byte[]` contract, different
-transport.
+The architecture establishes these boundaries:
 
-What this means in practice:
+1. Applications trust their native adapter interface.
+2. Avatar services authenticate to the local Avatar API and receive limited
+   capabilities.
+3. Avatar authenticates to KeyMaster and receives only explicitly delegated
+   services.
+4. KeyMaster performs authorization and user interaction.
+5. KeyVault performs constrained cryptographic operations.
 
-- The card never sees identity strings, protocol names, or configuration JSON — only mangled
-  byte arrays
-- The card never parses JSON-RPC or routes service requests
-- The card's interface is a small, fixed set of call IDs (getPublicKey, sign, encrypt,
-  decrypt per protocol) — easy to audit, easy to certify
-- Key material never leaves the card; only public keys and signatures come back
+Compromise of an Avatar or Avatar service must not reveal root secrets or
+private key material. KeyMaster must be able to revoke an Avatar, an adapter
+session, a service channel, or an individual capability.
 
-## Design Philosophy
+## Decisions Still Required
 
-**Butler, not a nanny.** The system does not enforce a security policy. It provides key
-management as a service. If the user wants to export a private key, the system helps. If the
-user wants signing-as-a-service without ever exposing the key, the system supports that too.
-The README puts it as "your keys, your money, your responsibility."
+The following require separate architecture decision records:
 
-**Key export coexists with delegation.** The same KeyVault can serve key material to the
-local CLI (for export into `~/.ssh/`) and to remote clients (via Avatar, where the key never
-leaves the vault). The architecture does not privilege one mode over the other.
+1. Local Avatar API framing, authentication, and operating-system support.
+2. Final Avatar-KeyMaster message schema and service versioning.
+3. Nostr event kinds, replay protection, and reconnect behavior.
+4. GnuPG integration through PKCS#11 versus a dedicated Assuan adapter.
+5. PKCS#11 object model, token model, and certificate provisioning.
+6. KeyMaster process model on desktop, server, and Android.
+7. User approval lifecycle and GUI notification mechanism.
+8. Audit-log format, retention, and privacy policy.
+9. Service plug-in discovery and compatibility rules.
 
-**Trust boundary at KeyMaster.** KeyVault trusts whoever submits a `(KeyPath, CallConfig)`.
-It is KeyMaster's job to decide who may submit what. Avatar authenticates clients via Nostr
-identity (public key), but authorization policy lives in the KeyMaster layer.
-
-**Semantic opacity at the vault.** KeyVault sees only bytes and call IDs. This keeps the
-crypto engine small and auditable, and makes it portable to constrained environments (smart
-cards, TEEs). All naming, routing, and policy live in KeyMaster.
+These decisions should be recorded as versioned architecture decision records
+under `doc/adr/`.
