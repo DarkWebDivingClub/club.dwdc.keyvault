@@ -1,5 +1,6 @@
 package club.dwdc.keyvault.core;
 
+import org.bitcoinj.base.BitcoinNetwork;
 import org.bitcoinj.crypto.ChildNumber;
 import org.bitcoinj.crypto.DeterministicKey;
 import org.bitcoinj.crypto.HDKeyDerivation;
@@ -31,11 +32,21 @@ public class Bip32KeyDerivator implements KeyDerivator {
 
     @Override
     public byte[] derive(int... path) {
+        return deriveKey(path).getPrivKeyBytes();
+    }
+
+    /** Derive a DeterministicKey at the given path (supports both hardened and non-hardened). */
+    public DeterministicKey deriveKey(int... path) {
         DeterministicKey key = master;
         for (int child : path) {
             key = HDKeyDerivation.deriveChildKey(key, new ChildNumber(child));
         }
-        return key.getPrivKeyBytes();
+        return key;
+    }
+
+    /** Derive the Base58Check-encoded xpub at the given path. */
+    public String deriveXpub(int... path) {
+        return deriveKey(path).serializePubB58(BitcoinNetwork.MAINNET);
     }
 
     /** SHA-256(value) -> first 4 bytes -> 31-bit unsigned int. */

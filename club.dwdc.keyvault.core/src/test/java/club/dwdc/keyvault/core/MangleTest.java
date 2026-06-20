@@ -98,4 +98,50 @@ class MangleTest {
                 () -> "mangle(\"alice@atlanta.com\") = 0x"
                         + Integer.toHexString(actual) + " did not match pinned value");
     }
+
+    // ── 2.5 Cross-language (T2) ─────────────────────────────────────────
+    // These values must match the Rust protocol_index() tests exactly.
+
+    @Test
+    void t2_crossLanguageSsh() {
+        int val = Bip32KeyDerivator.mangle("ssh");
+        assertEquals(0x7f5a55cf, val,
+                () -> "mangle(\"ssh\") = 0x" + Integer.toHexString(val));
+    }
+
+    @Test
+    void t2_crossLanguageGpg() {
+        int val = Bip32KeyDerivator.mangle("gpg");
+        assertEquals(0x6858a423, val,
+                () -> "mangle(\"gpg\") = 0x" + Integer.toHexString(val));
+    }
+
+    @Test
+    void t2_crossLanguageNostr() {
+        int val = Bip32KeyDerivator.mangle("nostr");
+        assertEquals(0x0f5392e4, val,
+                () -> "mangle(\"nostr\") = 0x" + Integer.toHexString(val));
+    }
+
+    // ── 2.6 deriveXpub / deriveKey ──────────────────────────────────────
+
+    @Test
+    void deriveXpubProducesValidFormat() {
+        byte[] seed = new byte[64]; // all zeros
+        seed[0] = 1;
+        Bip32KeyDerivator kd = new Bip32KeyDerivator(seed);
+        String xpub = kd.deriveXpub(0);
+        assertTrue(xpub.startsWith("xpub"), "xpub must start with 'xpub': " + xpub);
+    }
+
+    @Test
+    void deriveKeyRoundTrip() {
+        byte[] seed = new byte[64];
+        seed[0] = 1;
+        Bip32KeyDerivator kd = new Bip32KeyDerivator(seed);
+        var key = kd.deriveKey(0);
+        byte[] privBytes = key.getPrivKeyBytes();
+        assertNotNull(privBytes);
+        assertEquals(32, privBytes.length);
+    }
 }
