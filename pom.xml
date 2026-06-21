@@ -22,6 +22,8 @@
     <modules>
         <module>club.dwdc.keyvault.core</module>
         <module>club.dwdc.keyvault.nostr</module>
+        <module>club.dwdc.keyvault.desktop</module>
+        <module>club.dwdc.keyvault.cli</module>
     </modules>
 
     <properties>
