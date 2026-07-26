@@ -17,4 +17,8 @@ public record AlgField(int alg, int variant, int role) {
     public static final int ALG_ED25519 = 1;
     public static final int ALG_RSA     = 2;
     public static final int ALG_ECDSA   = 3;
+
+    // Role constants
+    public static final int ROLE_SIGN = 0;
+    public static final int ROLE_HPKE = 1;
 }

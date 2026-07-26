@@ -6,7 +6,8 @@ public enum Protocol {
     SSH(1238),
     OPENPGP(1239),
     X509(1240),
-    WIREGUARD(1241);
+    WIREGUARD(1241),
+    MLS(1242);
 
     private final int coinType;
 
